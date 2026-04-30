@@ -65,6 +65,59 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email dan password wajib diisi' });
+        }
+
+        const [rows] = await pool.execute(
+            'SELECT * FROM users WHERE email = ? AND oauth_provider IS NULL',
+            [email]
+        );
+
+        if (rows.length === 0) {
+            return res.status(401).json({ error: 'Email atau password salah' });
+        }
+
+        const user = rows[0];
+        const isValid = await bcrypt.compare(password, user.password);
+
+        if (!isValid) {
+            return res.status(401).json({ error: 'Email atau password salah' });
+        }
+
+        const JWT_SECRET = 'rahasia_jwt_uts_2410511062';
+        const JWT_REFRESH_SECRET = 'refresh_rahasia_jwt_uts_2410511062';
+
+        const accessToken = jwt.sign(
+            { userId: user.id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '15m' }
+        );
+
+        const refreshToken = jwt.sign(
+            { userId: user.id },
+            JWT_REFRESH_SECRET,
+            { expiresIn: '7d' }
+        );
+
+        res.json({
+            accessToken,
+            refreshToken,
+            user: {
+                id: user.id,
+                email: user.email,
+                name: user.name
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.listen(PORT, () => {
-    console.log(`🔐 Auth Service berjalan di port ${PORT}`);
+    console.log(`Auth Service berjalan di port ${PORT}`);
 });
