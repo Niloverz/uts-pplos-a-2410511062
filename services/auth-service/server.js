@@ -40,6 +40,31 @@ async function initDb() {
 
 initDb().catch(console.error);
 
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const { email, password, name } = req.body;
+        
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email dan password wajib diisi' });
+        }
+        
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        const [result] = await pool.execute(
+            'INSERT INTO users (email, password, name) VALUES (?, ?, ?)',
+            [email, hashedPassword, name || email.split('@')[0]]
+        );
+        
+        res.status(201).json({ message: 'User berhasil dibuat', userId: result.insertId });
+    } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY') {
+            res.status(409).json({ error: 'Email sudah terdaftar' });
+        } else {
+            res.status(500).json({ error: error.message });
+        }
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`🔐 Auth Service berjalan di port ${PORT}`);
 });
