@@ -10,6 +10,8 @@ const PORT = process.env.PORT || 8001;
 
 app.use(express.json());
 
+const blacklistedTokens = new Set();
+
 // Konfigurasi database (XAMPP default)
 const dbConfig = {
     host: 'localhost',
@@ -116,6 +118,85 @@ app.post('/api/auth/login', async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
+});
+
+app.post('/api/auth/refresh', async (req, res) => {
+    try {
+        const { refreshToken } = req.body;
+
+        if (!refreshToken) {
+            return res.status(400).json({ error: 'Refresh token wajib disertakan' });
+        }
+
+        const JWT_REFRESH_SECRET = 'refresh_rahasia_jwt_uts_2410511062';
+        const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
+
+        const [rows] = await pool.execute('SELECT * FROM users WHERE id = ?', [decoded.userId]);
+
+        if (rows.length === 0) {
+            return res.status(401).json({ error: 'User tidak ditemukan' });
+        }
+
+        const JWT_SECRET = 'rahasia_jwt_uts_2410511062';
+        const newAccessToken = jwt.sign(
+            { userId: rows[0].id, email: rows[0].email },
+            JWT_SECRET,
+            { expiresIn: '15m' }
+        );
+
+        res.json({ accessToken: newAccessToken });
+    } catch (error) {
+        res.status(401).json({ error: 'Refresh token tidak valid atau expired' });
+    }
+});
+
+const verifyToken = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+    if (!token) {
+        return res.status(401).json({ error: 'Akses ditolak. Token tidak disertakan.' });
+    }
+
+    try {
+        const JWT_SECRET = 'rahasia_jwt_uts_2410511062';
+        const decoded = jwt.verify(token, JWT_SECRET);
+
+          if (blacklistedTokens.has(token)) {
+            return res.status(401).json({ error: 'Token sudah logout' });
+        }
+        
+        req.user = decoded;
+        next();
+    } catch (error) {
+        return res.status(403).json({ error: 'Token tidak valid atau sudah kadaluarsa' });
+    }
+};
+
+// Contoh endpoint terproteksi (test middleware)
+app.get('/api/auth/profile', verifyToken, async (req, res) => {
+    try {
+        const [rows] = await pool.execute('SELECT id, email, name, avatar_url FROM users WHERE id = ?', [req.user.userId]);
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'User tidak ditemukan' });
+        }
+        res.json(rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/auth/logout', verifyToken, async (req, res) => {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (token) {
+        blacklistedTokens.add(token);
+        // Hapus dari blacklist setelah 15 menit (masa berlaku token)
+        setTimeout(() => blacklistedTokens.delete(token), 15 * 60 * 1000);
+    }
+    
+    res.status(204).send();
 });
 
 app.listen(PORT, () => {
