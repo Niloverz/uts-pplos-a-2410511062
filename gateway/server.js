@@ -1,125 +1,143 @@
 const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
-const rateLimit = require('express-rate-limit');
-const jwt = require('jsonwebtoken');
+const axios = require('axios');
 
 const app = express();
-const PORT = process.env.PORT || 8000;
+const PORT = 8000;
 
+app.use(express.json());
+
+// Service endpoints
 const SERVICES = {
     auth: 'http://localhost:8001',
-    produk: 'http://localhost:8080',     // CI4 default port 8080
+    produk: 'http://localhost:8080',
     order: 'http://localhost:8002'
 };
 
-const limiter = rateLimit({
-    windowMs: 60 * 1000, // 1 menit
-    max: 60,
-    message: { error: 'Terlalu banyak request, coba lagi nanti.' },
-    standardHeaders: true,
-    legacyHeaders: false,
-});
-
-// Terapkan rate limiting ke semua request
-app.use(limiter);
-
-const JWT_SECRET = 'rahasia_jwt_uts_2410511062';
-
-const verifyJWT = (req, res, next) => {
-    // Endpoint yang tidak butuh autentikasi
-    const publicPaths = [
-        '/api/auth/register',
-        '/api/auth/login',
-        '/api/auth/google',
-        '/api/auth/google/callback',
-        '/api/produk',      // GET produk bebas akses
-        '/api/produk/'
-    ];
-    
-    const isPublic = publicPaths.some(path => req.path.startsWith(path));
-    if (isPublic) {
-        return next();
-    }
-    
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.split(' ')[1];
-    
-    if (!token) {
-        return res.status(401).json({ error: 'Akses ditolak. Token tidak disertakan.' });
-    }
-    
+// Helper untuk forward request (tanpa proxy middleware)
+const forwardRequest = async (req, res, targetUrl) => {
     try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded;
-        next();
+        const options = {
+            method: req.method,
+            url: targetUrl,
+            headers: {
+                'Content-Type': 'application/json',
+                ...(req.headers.authorization && { 
+                    Authorization: req.headers.authorization 
+                })
+            },
+            data: req.body
+        };
+        
+        const response = await axios(options);
+        res.status(response.status).json(response.data);
     } catch (error) {
-        return res.status(403).json({ error: 'Token tidak valid atau sudah kadaluarsa' });
+        if (error.response) {
+            res.status(error.response.status).json(error.response.data);
+        } else {
+            res.status(500).json({ 
+                error: 'Service tidak tersedia',
+                detail: error.message 
+            });
+        }
     }
 };
 
-// Terapkan JWT validation ke semua request (kecuali yang dikecualikan)
-app.use(verifyJWT);
+// ============ ROUTING KE SERVICE (tanpa wildcard *) ============
 
-app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-    next();
+// Auth service (login, register, dll)
+app.post('/api/auth/login', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.auth}/api/auth/login`);
 });
 
+app.post('/api/auth/register', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.auth}/api/auth/register`);
+});
+
+app.post('/api/auth/refresh', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.auth}/api/auth/refresh`);
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.auth}/api/auth/logout`);
+});
+
+app.get('/api/auth/profile', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.auth}/api/auth/profile`);
+});
+
+// Produk service (CI4)
+app.get('/api/products', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.produk}/products`);
+});
+
+app.get('/api/products/:id', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.produk}/products/${req.params.id}`);
+});
+
+app.post('/api/products', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.produk}/products`);
+});
+
+app.put('/api/products/:id', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.produk}/products/${req.params.id}`);
+});
+
+app.delete('/api/products/:id', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.produk}/products/${req.params.id}`);
+});
+
+// Order service (cart & orders)
+app.get('/api/cart/:session_id', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.order}/api/cart/${req.params.session_id}`);
+});
+
+app.post('/api/cart', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.order}/api/cart`);
+});
+
+app.delete('/api/cart/:session_id/:produk_id', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.order}/api/cart/${req.params.session_id}/${req.params.produk_id}`);
+});
+
+app.post('/api/checkout', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.order}/api/checkout`);
+});
+
+app.get('/api/orders', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.order}/api/orders`);
+});
+
+app.get('/api/orders/:id', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.order}/api/orders/${req.params.id}`);
+});
+
+app.put('/api/orders/:id/status', async (req, res) => {
+    await forwardRequest(req, res, `${SERVICES.order}/api/orders/${req.params.id}/status`);
+});
+
+// Health check gateway
 app.get('/', (req, res) => {
     res.json({
         status: 'OK',
         service: 'API Gateway',
         message: 'Sistem Pemesanan UMKM',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        endpoints: {
+            auth: '/api/auth/*',
+            produk: '/api/products',
+            order: '/api/cart/*, /api/orders/*'
+        }
     });
 });
 
-app.use('/api/auth', createProxyMiddleware({
-    target: SERVICES.auth,
-    changeOrigin: true,
-    pathRewrite: {
-        '^/api/auth': '/api/auth'
-    },
-    onError: (err, req, res) => {
-        console.error('Auth service error:', err);
-        res.status(503).json({ error: 'Auth service tidak tersedia' });
-    }
-}));
-
-app.use('/api/produk', createProxyMiddleware({
-    target: SERVICES.produk,
-    changeOrigin: true,
-    pathRewrite: {
-        '^/api/produk': '/produk'  // CI4 routing tanpa /api prefix
-    },
-    onError: (err, req, res) => {
-        console.error('Produk service error:', err);
-        res.status(503).json({ error: 'Produk service tidak tersedia' });
-    }
-}));
-
-app.use('/api/order', createProxyMiddleware({
-    target: SERVICES.order,
-    changeOrigin: true,
-    pathRewrite: {
-        '^/api/order': '/api'
-    },
-    onError: (err, req, res) => {
-        console.error('Order service error:', err);
-        res.status(503).json({ error: 'Order service tidak tersedia' });
-    }
-}));
-
+// 404 handler
 app.use((req, res) => {
-    res.status(404).json({ error: 'Endpoint tidak ditemukan' });
+    res.status(404).json({ error: `Endpoint ${req.method} ${req.url} tidak ditemukan` });
 });
 
 app.listen(PORT, () => {
-    console.log(`
-      API GATEWAY BERJALAN              
-     Port: ${PORT}                            
-     Auth Service: ${SERVICES.auth}     
-     Produk Service: ${SERVICES.produk}  
-     Order Service: ${SERVICES.order}    
-    `);
+    console.log(` API Gateway berjalan di port ${PORT}`);
+    console.log(`   Auth -> ${SERVICES.auth}`);
+    console.log(`   Produk -> ${SERVICES.produk}`);
+    console.log(`   Order -> ${SERVICES.order}`);
 });
